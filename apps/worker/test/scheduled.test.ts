@@ -40,6 +40,7 @@ import {
   buildPublicHomepagePayloadFromState,
   buildPublicHomepageState,
   computePublicHomepageArtifactPayload,
+  parsePublicHomepageState,
   serializePublicHomepageState,
 } from '../src/public/homepage';
 import { runScheduledTick } from '../src/scheduler/scheduled';
@@ -288,6 +289,141 @@ describe('scheduler/scheduled regression', () => {
       artifactPayload: expect.objectContaining({ generated_at: expectedNow }),
     });
     expect(waitUntil).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips homepage refresh after taking the refresh lease when state and artifact are already fresh', async () => {
+    vi.mocked(wasHomepageRecentlyAccessed).mockResolvedValue(true);
+
+    const env = createEnv({ dueRows: [] });
+    const waitUntil = vi.fn();
+    const expectedNow = Math.floor(Date.now() / 1000);
+
+    vi.mocked(readHomepageStateSnapshotJson)
+      .mockResolvedValueOnce({
+        generatedAt: expectedNow - 60,
+        bodyJson: '{}',
+      })
+      .mockResolvedValueOnce({
+        generatedAt: expectedNow,
+        bodyJson: '{}',
+      });
+    vi.mocked(readHomepageArtifactSnapshotGeneratedAt)
+      .mockResolvedValueOnce(expectedNow - 60)
+      .mockResolvedValueOnce(expectedNow);
+
+    await runScheduledTick(env, { waitUntil } as unknown as ExecutionContext);
+    await Promise.all(waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>));
+
+    expect(buildPublicHomepageState).not.toHaveBeenCalled();
+    expect(buildPublicHomepagePayloadFromState).not.toHaveBeenCalled();
+    expect(writeHomepageStateAndArtifactJson).not.toHaveBeenCalled();
+  });
+
+  it('refreshes homepage state and artifact directly from the stored homepage state snapshot', async () => {
+    vi.mocked(wasHomepageRecentlyAccessed).mockResolvedValue(true);
+
+    const env = createEnv({
+      dueRows: [
+        {
+          id: 101,
+          name: 'API',
+          type: 'http',
+          target: 'https://example.com/health',
+          interval_sec: 60,
+          timeout_ms: 5000,
+          http_method: 'GET',
+          http_headers_json: null,
+          http_body: null,
+          expected_status_json: null,
+          response_keyword: null,
+          response_keyword_mode: null,
+          response_forbidden_keyword: null,
+          response_forbidden_keyword_mode: null,
+          state_status: 'up',
+          state_last_error: null,
+          last_changed_at: 1700000000,
+          consecutive_failures: 0,
+          consecutive_successes: 3,
+        },
+      ],
+    });
+    const waitUntil = vi.fn();
+    const expectedNow = Math.floor(Date.now() / 1000);
+    const storedState = {
+      generated_at: expectedNow - 60,
+      monitor_count_total: 1,
+      site_title: 'Status Hub',
+      site_description: 'Production services',
+      site_locale: 'en',
+      site_timezone: 'UTC',
+      uptime_rating_level: 4,
+      monitors: [
+        {
+          id: 101,
+          name: 'API',
+          type: 'http',
+          group_name: 'Core',
+          interval_sec: 60,
+          created_at: expectedNow - 40 * 86400,
+          state_status: 'up',
+          last_checked_at: expectedNow - 60,
+          covered_until_at: expectedNow - 60,
+          cache: {
+            heartbeat: {
+              checked_at: [],
+              status_codes: '',
+              latency_ms: [],
+            },
+            uptime_days: {
+              day_start_at: [],
+              total_sec: [],
+              downtime_sec: [],
+              unknown_sec: [],
+              uptime_sec: [],
+            },
+          },
+        },
+      ],
+      resolved_incident_preview: null,
+      maintenance_history_preview: null,
+    };
+
+    vi.mocked(readHomepageStateSnapshotJson)
+      .mockResolvedValueOnce({
+        generatedAt: expectedNow - 60,
+        bodyJson: '{"stale":true}',
+      })
+      .mockResolvedValueOnce({
+        generatedAt: expectedNow - 60,
+        bodyJson: '{"stale":true}',
+      });
+    vi.mocked(readHomepageArtifactSnapshotGeneratedAt)
+      .mockResolvedValueOnce(expectedNow - 60)
+      .mockResolvedValueOnce(expectedNow - 60);
+    vi.mocked(parsePublicHomepageState).mockReturnValue(storedState as never);
+    vi.mocked(advancePublicHomepageStateCoverageInPlace).mockImplementation((state, now) => {
+      (state as { generated_at: number }).generated_at = now;
+    });
+
+    await runScheduledTick(env, { waitUntil } as unknown as ExecutionContext);
+    await Promise.all(waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>));
+
+    expect(parsePublicHomepageState).toHaveBeenCalledTimes(1);
+    expect(buildPublicHomepageState).not.toHaveBeenCalled();
+    expect(buildPublicHomepagePayloadFromState).toHaveBeenCalledWith({
+      state: expect.any(Object),
+      now: expectedNow,
+      activeIncidents: [],
+      maintenanceWindows: { active: [], upcoming: [] },
+      monitorLimit: 12,
+    });
+    expect(writeHomepageStateAndArtifactJson).toHaveBeenCalledWith({
+      db: env.DB,
+      now: expectedNow,
+      stateGeneratedAt: expectedNow,
+      stateBodyJson: '{}',
+      artifactPayload: expect.objectContaining({ generated_at: expectedNow }),
+    });
   });
 
   it('logs homepage snapshot refresh failures without breaking the tick', async () => {
