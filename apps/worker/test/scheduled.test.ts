@@ -21,6 +21,7 @@ vi.mock('../src/public/homepage', () => ({
   buildPublicHomepageState: vi.fn(),
   computePublicHomepageArtifactPayload: vi.fn(),
   parsePublicHomepageState: vi.fn(),
+  serializePublicHomepageState: vi.fn(),
 }));
 vi.mock('../src/snapshots', () => ({
   readHomepageArtifactSnapshotGeneratedAt: vi.fn(),
@@ -39,6 +40,7 @@ import {
   buildPublicHomepagePayloadFromState,
   buildPublicHomepageState,
   computePublicHomepageArtifactPayload,
+  serializePublicHomepageState,
 } from '../src/public/homepage';
 import { runScheduledTick } from '../src/scheduler/scheduled';
 import { acquireLease } from '../src/scheduler/lock';
@@ -197,6 +199,7 @@ describe('scheduler/scheduled regression', () => {
     vi.mocked(computePublicHomepageArtifactPayload).mockResolvedValue({
       generated_at: Math.floor(Date.now() / 1000),
     } as never);
+    vi.mocked(serializePublicHomepageState).mockReturnValue('{}');
     vi.mocked(readHomepageArtifactSnapshotGeneratedAt).mockResolvedValue(null);
     vi.mocked(readHomepageStateSnapshotJson).mockResolvedValue(null);
     vi.mocked(refreshPublicHomepageArtifactSnapshotIfNeeded).mockResolvedValue(false);

@@ -685,9 +685,11 @@ publicRoutes.get('/homepage', async (c) => {
     readHomepageSnapshotJson(c.env.DB, now),
     readHomepageStateSnapshotJson(c.env.DB),
   ]);
+  const snapshotGeneratedAt = snapshot ? now - snapshot.age : null;
   if (
     snapshot &&
-    (!stateSnapshot || stateSnapshot.generatedAt <= snapshot.generated_at)
+    (!stateSnapshot ||
+      (snapshotGeneratedAt !== null && stateSnapshot.generatedAt <= snapshotGeneratedAt))
   ) {
     if (snapshot.age >= 30) {
       markHomepageAccess();
