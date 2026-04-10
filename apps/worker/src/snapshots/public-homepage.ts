@@ -4,39 +4,34 @@ import {
   publicHomepageResponseSchema,
   type PublicHomepageResponse,
 } from '../schemas/public-homepage';
-import { z } from 'zod';
 
 const SNAPSHOT_KEY = 'homepage';
+const SNAPSHOT_ARTIFACT_KEY = 'homepage:artifact';
 const MAX_AGE_SECONDS = 60;
 const MAX_STALE_SECONDS = 10 * 60;
 const REFRESH_LOCK_NAME = 'snapshot:homepage:refresh';
 const MAX_BOOTSTRAP_MONITORS = 12;
 
-const homepageRenderArtifactSchema = z.object({
-  generated_at: z.number().int().nonnegative(),
-  preload_html: z.string(),
-  snapshot: publicHomepageResponseSchema,
-  meta_title: z.string(),
-  meta_description: z.string(),
-});
+const SPLIT_SNAPSHOT_VERSION = 3;
+const LEGACY_COMBINED_SNAPSHOT_VERSION = 2;
 
-export type PublicHomepageRenderArtifact = z.infer<typeof homepageRenderArtifactSchema>;
-
-type StoredHomepageSnapshot = {
-  version: 2;
-  data: PublicHomepageResponse;
-  render: PublicHomepageRenderArtifact;
+export type PublicHomepageRenderArtifact = {
+  generated_at: number;
+  preload_html: string;
+  snapshot: PublicHomepageResponse;
+  meta_title: string;
+  meta_description: string;
 };
 
-const storedHomepageSnapshotDataSchema = z.object({
-  version: z.literal(2),
-  data: publicHomepageResponseSchema,
-});
+type StoredHomepageDataSnapshot = {
+  version: typeof SPLIT_SNAPSHOT_VERSION;
+  data: PublicHomepageResponse;
+};
 
-const storedHomepageSnapshotRenderSchema = z.object({
-  version: z.literal(2),
-  render: homepageRenderArtifactSchema,
-});
+type StoredHomepageRenderSnapshot = {
+  version: typeof SPLIT_SNAPSHOT_VERSION;
+  render: PublicHomepageRenderArtifact;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -337,9 +332,26 @@ function looksLikeHomepagePayload(value: unknown): value is PublicHomepageRespon
   if (!isRecord(value)) return false;
   return (
     typeof value.generated_at === 'number' &&
+    (value.bootstrap_mode === 'full' || value.bootstrap_mode === 'partial') &&
+    typeof value.monitor_count_total === 'number' &&
     typeof value.site_title === 'string' &&
     Array.isArray(value.monitors) &&
-    Array.isArray(value.active_incidents)
+    Array.isArray(value.active_incidents) &&
+    isRecord(value.summary) &&
+    isRecord(value.banner) &&
+    isRecord(value.maintenance_windows)
+  );
+}
+
+function looksLikeHomepageArtifact(value: unknown): value is PublicHomepageRenderArtifact {
+  if (!isRecord(value)) return false;
+
+  return (
+    typeof value.generated_at === 'number' &&
+    typeof value.preload_html === 'string' &&
+    typeof value.meta_title === 'string' &&
+    typeof value.meta_description === 'string' &&
+    looksLikeHomepagePayload(value.snapshot)
   );
 }
 
@@ -347,13 +359,12 @@ function readStoredHomepageSnapshotData(value: unknown): PublicHomepageResponse 
   if (!isRecord(value)) return null;
 
   const version = value.version;
-  if (version === 2) {
-    const parsed = storedHomepageSnapshotDataSchema.safeParse(value);
-    return parsed.success ? parsed.data.data : null;
+  if (version === SPLIT_SNAPSHOT_VERSION) {
+    return looksLikeHomepagePayload(value.data) ? value.data : null;
   }
 
-  if (!looksLikeHomepagePayload(value)) {
-    return null;
+  if (version === LEGACY_COMBINED_SNAPSHOT_VERSION) {
+    return looksLikeHomepagePayload(value.data) ? value.data : null;
   }
 
   const parsed = publicHomepageResponseSchema.safeParse({
@@ -370,10 +381,12 @@ function readStoredHomepageSnapshotData(value: unknown): PublicHomepageResponse 
 
 function readStoredHomepageSnapshotRender(value: unknown): PublicHomepageRenderArtifact | null {
   if (!isRecord(value)) return null;
-  if (value.version !== 2) return null;
+  const version = value.version;
+  if (version !== SPLIT_SNAPSHOT_VERSION && version !== LEGACY_COMBINED_SNAPSHOT_VERSION) {
+    return null;
+  }
 
-  const parsed = storedHomepageSnapshotRenderSchema.safeParse(value);
-  return parsed.success ? parsed.data.render : null;
+  return looksLikeHomepageArtifact(value.render) ? value.render : null;
 }
 
 function safeJsonParse(text: string): unknown | null {
@@ -386,8 +399,9 @@ function safeJsonParse(text: string): unknown | null {
   }
 }
 
-async function readHomepageSnapshotRow(
+async function readSnapshotRow(
   db: D1Database,
+  key: string,
 ): Promise<{ generated_at: number; body_json: string } | null> {
   try {
     return await db
@@ -398,12 +412,20 @@ async function readHomepageSnapshotRow(
         WHERE key = ?1
       `,
       )
-      .bind(SNAPSHOT_KEY)
+      .bind(key)
       .first<{ generated_at: number; body_json: string }>();
   } catch (err) {
     console.warn('homepage snapshot: read failed', err);
     return null;
   }
+}
+
+async function readHomepageSnapshotRow(db: D1Database) {
+  return readSnapshotRow(db, SNAPSHOT_KEY);
+}
+
+async function readHomepageArtifactSnapshotRow(db: D1Database) {
+  return readSnapshotRow(db, SNAPSHOT_ARTIFACT_KEY);
 }
 
 function isSameMinute(a: number, b: number): boolean {
@@ -476,7 +498,7 @@ export async function readHomepageSnapshotArtifact(
   db: D1Database,
   now: number,
 ): Promise<{ data: PublicHomepageRenderArtifact; age: number } | null> {
-  const row = await readHomepageSnapshotRow(db);
+  const row = (await readHomepageArtifactSnapshotRow(db)) ?? (await readHomepageSnapshotRow(db));
   if (!row) return null;
 
   const age = Math.max(0, now - row.generated_at);
@@ -501,7 +523,7 @@ export async function readStaleHomepageSnapshotArtifact(
   db: D1Database,
   now: number,
 ): Promise<{ data: PublicHomepageRenderArtifact; age: number } | null> {
-  const row = await readHomepageSnapshotRow(db);
+  const row = (await readHomepageArtifactSnapshotRow(db)) ?? (await readHomepageSnapshotRow(db));
   if (!row) return null;
 
   const age = Math.max(0, now - row.generated_at);
@@ -534,24 +556,29 @@ export async function writeHomepageSnapshot(
   now: number,
   payload: PublicHomepageResponse,
 ): Promise<void> {
-  const bodyJson = JSON.stringify({
-    version: 2,
+  const render = buildHomepageRenderArtifact(payload);
+  const dataBodyJson = JSON.stringify({
+    version: SPLIT_SNAPSHOT_VERSION,
     data: payload,
-    render: buildHomepageRenderArtifact(payload),
-  } satisfies StoredHomepageSnapshot);
-  await db
-    .prepare(
-      `
-      INSERT INTO public_snapshots (key, generated_at, body_json, updated_at)
-      VALUES (?1, ?2, ?3, ?4)
-      ON CONFLICT(key) DO UPDATE SET
-        generated_at = excluded.generated_at,
-        body_json = excluded.body_json,
-        updated_at = excluded.updated_at
-    `,
-    )
-    .bind(SNAPSHOT_KEY, payload.generated_at, bodyJson, now)
-    .run();
+  } satisfies StoredHomepageDataSnapshot);
+  const renderBodyJson = JSON.stringify({
+    version: SPLIT_SNAPSHOT_VERSION,
+    render,
+  } satisfies StoredHomepageRenderSnapshot);
+
+  const upsertSql = `
+    INSERT INTO public_snapshots (key, generated_at, body_json, updated_at)
+    VALUES (?1, ?2, ?3, ?4)
+    ON CONFLICT(key) DO UPDATE SET
+      generated_at = excluded.generated_at,
+      body_json = excluded.body_json,
+      updated_at = excluded.updated_at
+  `;
+
+  await db.batch([
+    db.prepare(upsertSql).bind(SNAPSHOT_KEY, payload.generated_at, dataBodyJson, now),
+    db.prepare(upsertSql).bind(SNAPSHOT_ARTIFACT_KEY, render.generated_at, renderBodyJson, now),
+  ]);
 }
 
 export function applyHomepageCacheHeaders(res: Response, ageSeconds: number): void {

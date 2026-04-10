@@ -118,25 +118,21 @@ describe('public homepage route', () => {
   it('serves a fresh homepage snapshot without live compute', async () => {
     const payload = samplePayload(190);
     const stored = {
-      version: 2,
+      version: 3,
       data: payload,
-      render: {
-        generated_at: payload.generated_at,
-        preload_html: '<div id="uptimer-preload">hello</div>',
-        snapshot: payload,
-        meta_title: 'Uptimer',
-        meta_description: 'All Systems Operational',
-      },
     };
     vi.spyOn(Date, 'now').mockReturnValue(200_000);
 
     const res = await requestHomepage([
       {
         match: 'from public_snapshots',
-        first: () => ({
-          generated_at: payload.generated_at,
-          body_json: JSON.stringify(stored),
-        }),
+        first: (args) =>
+          args[0] === 'homepage'
+            ? {
+                generated_at: payload.generated_at,
+                body_json: JSON.stringify(stored),
+              }
+            : null,
       },
     ]);
 
@@ -144,7 +140,7 @@ describe('public homepage route', () => {
     expect(await res.json()).toEqual(payload);
   });
 
-  it('serves homepage render artifacts from the same snapshot row', async () => {
+  it('serves homepage render artifacts from the artifact snapshot row', async () => {
     const payload = samplePayload(190);
     const render = {
       generated_at: payload.generated_at,
@@ -158,14 +154,48 @@ describe('public homepage route', () => {
     const res = await requestHomepageArtifact([
       {
         match: 'from public_snapshots',
-        first: () => ({
-          generated_at: payload.generated_at,
-          body_json: JSON.stringify({
-            version: 2,
-            data: payload,
-            render,
-          }),
-        }),
+        first: (args) =>
+          args[0] === 'homepage:artifact'
+            ? {
+                generated_at: payload.generated_at,
+                body_json: JSON.stringify({
+                  version: 3,
+                  render,
+                }),
+              }
+            : null,
+      },
+    ]);
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(render);
+  });
+
+  it('falls back to the legacy combined homepage row for artifacts during rollout', async () => {
+    const payload = samplePayload(190);
+    const render = {
+      generated_at: payload.generated_at,
+      preload_html: '<div id="uptimer-preload">hello</div>',
+      snapshot: payload,
+      meta_title: 'Uptimer',
+      meta_description: 'All Systems Operational',
+    };
+    vi.spyOn(Date, 'now').mockReturnValue(200_000);
+
+    const res = await requestHomepageArtifact([
+      {
+        match: 'from public_snapshots',
+        first: (args) =>
+          args[0] === 'homepage'
+            ? {
+                generated_at: payload.generated_at,
+                body_json: JSON.stringify({
+                  version: 2,
+                  data: payload,
+                  render,
+                }),
+              }
+            : null,
       },
     ]);
 

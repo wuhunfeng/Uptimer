@@ -91,18 +91,33 @@ describe('snapshots/public-homepage', () => {
 
   it('reads fresh and bounded-stale homepage snapshots without live compute', async () => {
     const payload = samplePayload(190);
-    const stored = {
-      version: 2,
+    const storedData = {
+      version: 3,
       data: payload,
+    };
+    const storedRender = {
+      version: 3,
       render: buildHomepageRenderArtifact(payload),
     };
     const db = createFakeD1Database([
       {
         match: 'from public_snapshots',
-        first: () => ({
-          generated_at: payload.generated_at,
-          body_json: JSON.stringify(stored),
-        }),
+        first: (args) => {
+          const key = args[0];
+          if (key === 'homepage') {
+            return {
+              generated_at: payload.generated_at,
+              body_json: JSON.stringify(storedData),
+            };
+          }
+          if (key === 'homepage:artifact') {
+            return {
+              generated_at: payload.generated_at,
+              body_json: JSON.stringify(storedRender),
+            };
+          }
+          return null;
+        },
       },
     ]);
 
@@ -111,7 +126,7 @@ describe('snapshots/public-homepage', () => {
       age: 10,
     });
     await expect(readHomepageSnapshotArtifact(db, 200)).resolves.toEqual({
-      data: stored.render,
+      data: storedRender.render,
       age: 10,
     });
     await expect(readStaleHomepageSnapshot(db, 200)).resolves.toEqual({
@@ -119,7 +134,7 @@ describe('snapshots/public-homepage', () => {
       age: 10,
     });
     await expect(readStaleHomepageSnapshotArtifact(db, 200)).resolves.toEqual({
-      data: stored.render,
+      data: storedRender.render,
       age: 10,
     });
   });
@@ -208,12 +223,12 @@ describe('snapshots/public-homepage', () => {
   });
 
   it('writes normalized homepage snapshots with upsert semantics', async () => {
-    let boundArgs = null as unknown[] | null;
+    const boundArgs: unknown[][] = [];
     const db = createFakeD1Database([
       {
         match: 'insert into public_snapshots',
         run: (args) => {
-          boundArgs = args;
+          boundArgs.push(args);
           return { meta: { changes: 1 } };
         },
       },
@@ -222,13 +237,19 @@ describe('snapshots/public-homepage', () => {
     const payload = samplePayload(280);
     await writeHomepageSnapshot(db, 300, payload);
 
-    const stored = {
-      version: 2,
+    const storedData = {
+      version: 3,
       data: payload,
+    };
+    const storedRender = {
+      version: 3,
       render: buildHomepageRenderArtifact(payload),
     };
 
-    expect(boundArgs).toEqual(['homepage', 280, JSON.stringify(stored), 300]);
+    expect(boundArgs).toEqual([
+      ['homepage', 280, JSON.stringify(storedData), 300],
+      ['homepage:artifact', 280, JSON.stringify(storedRender), 300],
+    ]);
   });
 
   it('applies bounded cache headers for homepage payloads', () => {
@@ -275,29 +296,30 @@ describe('snapshots/public-homepage', () => {
     vi.mocked(acquireLease).mockResolvedValue(true);
 
     let readCount = 0;
-    let writtenArgs = null as unknown[] | null;
+    const writtenArgs: unknown[][] = [];
     const now = 1_728_000_120;
     const db = createFakeD1Database([
       {
         match: 'from public_snapshots',
-        first: () => {
+        first: (args) => {
+          if (args[0] !== 'homepage') {
+            return null;
+          }
           readCount += 1;
           if (readCount <= 2) {
             return {
               generated_at: 1_728_000_001,
               body_json: JSON.stringify({
-                version: 2,
+                version: 3,
                 data: samplePayload(1_728_000_001),
-                render: buildHomepageRenderArtifact(samplePayload(1_728_000_001)),
               }),
             };
           }
           return {
             generated_at: now,
             body_json: JSON.stringify({
-              version: 2,
+              version: 3,
               data: samplePayload(now),
-              render: buildHomepageRenderArtifact(samplePayload(now)),
             }),
           };
         },
@@ -305,7 +327,7 @@ describe('snapshots/public-homepage', () => {
       {
         match: 'insert into public_snapshots',
         run: (args) => {
-          writtenArgs = args;
+          writtenArgs.push(args);
           return { meta: { changes: 1 } };
         },
       },
@@ -313,15 +335,21 @@ describe('snapshots/public-homepage', () => {
 
     const compute = vi.fn(async () => samplePayload(now));
     const refreshed = await refreshPublicHomepageSnapshotIfNeeded({ db, now, compute });
-    const stored = {
-      version: 2,
+    const storedData = {
+      version: 3,
       data: samplePayload(now),
+    };
+    const storedRender = {
+      version: 3,
       render: buildHomepageRenderArtifact(samplePayload(now)),
     };
 
     expect(refreshed).toBe(true);
     expect(acquireLease).toHaveBeenCalledWith(db, 'snapshot:homepage:refresh', now, 55);
     expect(compute).toHaveBeenCalledTimes(1);
-    expect(writtenArgs).toEqual(['homepage', now, JSON.stringify(stored), now]);
+    expect(writtenArgs).toEqual([
+      ['homepage', now, JSON.stringify(storedData), now],
+      ['homepage:artifact', now, JSON.stringify(storedRender), now],
+    ]);
   });
 });
