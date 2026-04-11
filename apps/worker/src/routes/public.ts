@@ -30,7 +30,6 @@ import {
   readStaleHomepageSnapshotArtifact,
   readStaleHomepageSnapshotArtifactJson,
   toSnapshotPayload,
-  writeHomepageDataSnapshot,
   writeStatusSnapshot,
 } from '../snapshots';
 
@@ -614,13 +613,6 @@ publicRoutes.get('/homepage', async (c) => {
     );
     const res = c.json(payload);
     applyHomepageCacheHeaders(res, statusSnapshot.age);
-
-    c.executionCtx.waitUntil(
-      writeHomepageDataSnapshot(c.env.DB, now, payload).catch((err) => {
-        console.warn('homepage snapshot: write failed', err);
-      }),
-    );
-
     return res;
   }
 
@@ -643,14 +635,9 @@ publicRoutes.get('/homepage', async (c) => {
     applyHomepageCacheHeaders(res, 0);
 
     c.executionCtx.waitUntil(
-      Promise.all([
-        writeStatusSnapshot(c.env.DB, now, statusPayload).catch((err) => {
-          console.warn('public snapshot: write failed', err);
-        }),
-        writeHomepageDataSnapshot(c.env.DB, now, payload).catch((err) => {
-          console.warn('homepage snapshot: write failed', err);
-        }),
-      ]).then(() => undefined),
+      writeStatusSnapshot(c.env.DB, now, statusPayload).catch((err) => {
+        console.warn('public snapshot: write failed', err);
+      }),
     );
 
     return res;

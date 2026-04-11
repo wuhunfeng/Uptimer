@@ -34,10 +34,6 @@ function installCacheMock(store: CacheStore) {
 }
 
 async function requestHomepage(handlers: FakeD1QueryHandler[]) {
-  return requestHomepageWithWaitUntil(handlers).then(({ response }) => response);
-}
-
-async function requestHomepageWithWaitUntil(handlers: FakeD1QueryHandler[]) {
   const env = {
     DB: createFakeD1Database(handlers),
     ADMIN_TOKEN: 'test-admin-token',
@@ -48,14 +44,11 @@ async function requestHomepageWithWaitUntil(handlers: FakeD1QueryHandler[]) {
   app.notFound(handleNotFound);
   app.route('/api/v1/public', publicRoutes);
 
-  const waitUntil = vi.fn();
-  const response = await app.fetch(
+  return app.fetch(
     new Request('https://status.example.com/api/v1/public/homepage'),
     env,
-    { waitUntil } as unknown as ExecutionContext,
+    { waitUntil: vi.fn() } as unknown as ExecutionContext,
   );
-
-  return { response, waitUntil };
 }
 
 async function requestHomepageArtifact(handlers: FakeD1QueryHandler[]) {
@@ -351,9 +344,8 @@ describe('public homepage route', () => {
   it('falls back to the fresh public status snapshot when the full homepage snapshot is missing', async () => {
     const now = 200;
     vi.spyOn(Date, 'now').mockReturnValue(now * 1000);
-    const snapshotWrites: Array<{ key: unknown; generatedAt: unknown }> = [];
 
-    const { response: res, waitUntil } = await requestHomepageWithWaitUntil([
+    const res = await requestHomepage([
       {
         match: 'from public_snapshots',
         first: (args) =>
@@ -433,13 +425,6 @@ describe('public homepage route', () => {
         match: 'from maintenance_windows',
         all: () => [],
       },
-      {
-        match: 'insert into public_snapshots',
-        run: (args) => {
-          snapshotWrites.push({ key: args[0], generatedAt: args[1] });
-          return { meta: { changes: 1 } };
-        },
-      },
     ]);
 
     expect(res.status).toBe(200);
@@ -458,9 +443,6 @@ describe('public homepage route', () => {
         },
       ],
     });
-    expect(waitUntil.mock.calls.length).toBeGreaterThanOrEqual(1);
-    await Promise.all(waitUntil.mock.calls.map((call) => call[0] as Promise<unknown>));
-    expect(snapshotWrites).toEqual([{ key: 'homepage', generatedAt: 190 }]);
   });
 
   it('returns 503 when no homepage snapshot is available', async () => {

@@ -197,7 +197,7 @@ describe('public homepage downgrade guard', () => {
 
   it('still upgrades to computed homepage data when the live status payload is healthy', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(260_000);
-    const snapshotWrites: string[] = [];
+    let statusSnapshotWrites = 0;
     computePublicStatusPayload.mockResolvedValue({
       generated_at: 260,
       site_title: 'Status Hub',
@@ -242,8 +242,8 @@ describe('public homepage downgrade guard', () => {
       },
       {
         match: 'insert into public_snapshots',
-        run: (args) => {
-          snapshotWrites.push(String(args[0]));
+        run: () => {
+          statusSnapshotWrites += 1;
           return 1;
         },
       },
@@ -270,6 +270,6 @@ describe('public homepage downgrade guard', () => {
       },
     });
     expect(computePublicStatusPayload).toHaveBeenCalledOnce();
-    expect(snapshotWrites).toEqual(['status', 'homepage']);
+    expect(statusSnapshotWrites).toBe(1);
   });
 });
